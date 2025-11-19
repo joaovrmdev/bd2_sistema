@@ -1,256 +1,189 @@
-
-import snowflake.connector
-import datetime
+from snowflake.snowpark import Session
+from snowflake.snowpark.exceptions import SnowparkSQLException
+import pandas as pd
+import streamlit as st
 
 # --- CONFIGURAÇÃO ---
-SNOWFLAKE_CONFIG = {
-    'user': 'joaomata',
-    'password': 'Oscarwilde2018',
-    'account': 'IKCVERM-GEA41633',
-    'warehouse': 'COMPUTE_WH',
-    'database': 'BD2',
-    'schema': 'PUBLIC'
+CONNECTION_PARAMETERS = {
+    "account": "IKCVERM-GEA41633",
+    "user": "joaomata",
+    "password": "Oscarwilde2018",
+    "warehouse": "COMPUTE_WH",
+    "database": "BD2",
+    "schema": "PUBLIC"
 }
-# --- CONEXÃO BD ---
+# --------------------
 
-def conectar_bd():
-    """Tenta estabelecer a conexão com o Snowflake."""
+def get_snowpark_session():
+    if 'snowpark_session' not in st.session_state:
+        try:
+            session = Session.builder.configs(CONNECTION_PARAMETERS).create()
+            session.sql("ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE").collect()
+            st.session_state.snowpark_session = session
+            return session
+        except Exception as e:
+            st.error(f"Erro ao conectar com Snowpark. Verifique as credenciais em snowpark_utils.py: {e}")
+            st.stop()
+    return st.session_state.snowpark_session
+
+def executar_snowpark_dml(session: Session, sql, params=None):
     try:
-        conn = snowflake.connector.connect(**SNOWFLAKE_CONFIG)
-        return conn
-    except snowflake.connector.errors.ProgrammingError as e:
-        print(f"Erro ao conectar ao Snowflake: {e}")
-        print("Verifique se as credenciais e a rede estão corretas.")
-        return None
+        if params:
+            safe_params = tuple(f"'{p}'" if isinstance(p, str) else str(p) for p in params)
+            sql_final = sql.replace('%s', '{}').format(*safe_params)
+        else:
+            sql_final = sql
+
+        resultado = session.sql(sql_final).collect()
+        return resultado[0][0] 
+    except SnowparkSQLException as e:
+        return str(e)
     except Exception as e:
-        print(f"Ocorreu um erro inesperado: {e}")
-        return None
+        return str(e)
 
-def executar_sql(sql_query, params=None, fetch=False):
-    conn = conectar_bd()
-    if conn is None:
-        return (None, None) if fetch else "Erro de Conexão com Snowflake."
-
+def executar_snowpark_select(session: Session, sql, params=None):
     try:
-        cursor = conn.cursor()
-        cursor.execute(sql_query, params)
-
-        if fetch:
-            columns = [col[0] for col in cursor.description]
-            resultados = cursor.fetchall()
-            return columns, resultados
+        if params:
+            safe_params = tuple(f"'{p}'" if isinstance(p, str) else str(p) for p in params)
+            sql_final = sql.replace('%s', '{}').format(*safe_params)
         else:
-            conn.commit()
-            return cursor.rowcount
+            sql_final = sql
+            
+        df_snowpark = session.sql(sql_final).to_pandas()
+        return df_snowpark.columns.tolist(), df_snowpark.values.tolist()
+    except SnowparkSQLException as e:
+        st.error(f"Erro na consulta: {e}")
+        return [], []
+    except Exception as e:
+        st.error(f"Erro geral: {e}")
+        return [], []
 
-    except snowflake.connector.errors.ProgrammingError as e:
-        print(f"Erro SQL: {e}")
-        if fetch:
-             return ([], [])
-        else:
-             return str(e)
+def buscar_ids_nomes(session: Session, tabela, nome_coluna='NOME'):
+    sql = f"SELECT ID, {nome_coluna} FROM {tabela}"
+    return executar_snowpark_select(session, sql)
 
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+def buscar_registro_por_id(session: Session, tabela, id_registro):
+    sql = f"SELECT * FROM {tabela} WHERE ID = %s"
+    _, dados = executar_snowpark_select(session, sql, (id_registro,))
+    return dados[0] if dados else None
 
-# --- FUNÇÕES  DE LEITURA ---
+def deletar_registro_por_id(session: Session, tabela, id_registro):
+    sql = f"DELETE FROM {tabela} WHERE ID = %s"
+    return executar_snowpark_dml(session, sql, (id_registro,))
 
-def buscar_organizadores():
-    """Busca ID e Nome dos Organizadores (e Palestrantes) para FKs."""
-    sql = "SELECT id, nome FROM PESSOAS WHERE tipo_pessoa = 'Organizador';"
-    return executar_sql(sql, fetch=True)
+def criar_pessoa(session: Session, nome, email, telefone, tipo_pessoa):
+    sql = "INSERT INTO PESSOAS (nome, email, telefone, tipo_pessoa) VALUES (%s, %s, %s, %s)"
+    return executar_snowpark_dml(session, sql, (nome, email, telefone, tipo_pessoa))
 
-def buscar_participantes():
-    """Busca ID e Nome das Pessoas que são Participantes para FKs."""
-    sql = "SELECT id, nome FROM PESSOAS WHERE tipo_pessoa = 'Participante';"
-    return executar_sql(sql, fetch=True)
+def ler_pessoas(session: Session):
+    sql = "SELECT id, nome, email, telefone, tipo_pessoa FROM PESSOAS"
+    return executar_snowpark_select(session, sql)
 
-def buscar_eventos():
-    """Busca ID e Nome dos Eventos para FKs."""
-    sql = "SELECT id, nome FROM EVENTOS ORDER BY data_inicio DESC;"
-    return executar_sql(sql, fetch=True)
+def atualizar_pessoa(session: Session, id_pessoa, nome, email, telefone, tipo_pessoa):
+    sql = "UPDATE PESSOAS SET nome = %s, email = %s, telefone = %s, tipo_pessoa = %s WHERE id = %s"
+    return executar_snowpark_dml(session, sql, (nome, email, telefone, tipo_pessoa, id_pessoa))
 
-def buscar_todas_palestras():
-    """Busca ID e Título de todas as Palestras para FKs."""
-    sql = "SELECT id, titulo FROM PALESTRAS ORDER BY data DESC, hora ASC;"
-    return executar_sql(sql, fetch=True)
+def criar_evento(session: Session, nome, data_inicio, data_fim, local, organizador_id):
+    sql = "INSERT INTO EVENTOS (nome, data_inicio, data_fim, local, organizador_id) VALUES (%s, %s, %s, %s, %s)"
+    return executar_snowpark_dml(session, sql, (nome, data_inicio, data_fim, local, organizador_id))
 
-def buscar_tipos_pagamento():
-    """Busca ID e Nome dos Tipos de Pagamento para FKs."""
-    sql = "SELECT id, nome FROM TIPOS_PAGAMENTO ORDER BY nome ASC;"
-    return executar_sql(sql, fetch=True)
-
-
-# --- CRUD PARA PESSOAS ---
-
-def criar_pessoa(nome, email, telefone, tipo_pessoa):
+def ler_eventos(session: Session):
     sql = """
-    INSERT INTO PESSOAS (nome, email, telefone, tipo_pessoa)
-    VALUES (%s, %s, %s, %s)
+    SELECT
+        E.id, E.nome AS nome_evento, E.data_inicio, E.data_fim, E.local, P.nome AS organizador
+    FROM
+        EVENTOS E
+    JOIN
+        PESSOAS P ON E.organizador_id = P.id
     """
-    return executar_sql(sql, (nome, email, telefone, tipo_pessoa))
+    return executar_snowpark_select(session, sql)
 
+def atualizar_evento(session: Session, id_evento, nome, data_inicio, data_fim, local, organizador_id):
+    sql = "UPDATE EVENTOS SET nome = %s, data_inicio = %s, data_fim = %s, local = %s, organizador_id = %s WHERE id = %s"
+    return executar_snowpark_dml(session, sql, (nome, data_inicio, data_fim, local, organizador_id, id_evento))
 
-# --- CRUD PARA EVENTOS ---
+def criar_palestra(session: Session, titulo, descricao, data, hora, sala, evento_id, palestrante_id):
+    sql = "INSERT INTO PALESTRAS (titulo, descricao, data, hora, sala, evento_id, palestrante_id) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    return executar_snowpark_dml(session, sql, (titulo, descricao, data, hora, sala, evento_id, palestrante_id))
 
-def criar_evento(nome, data_inicio, data_fim, local, organizador_id):
+def ler_palestras(session: Session):
     sql = """
-    INSERT INTO EVENTOS (nome, data_inicio, data_fim, local, organizador_id)
-    VALUES (%s, %s, %s, %s, %s)
+    SELECT
+        L.id, L.titulo, L.data, L.hora, L.sala, E.nome AS evento, P.nome AS palestrante
+    FROM
+        PALESTRAS L
+    JOIN
+        EVENTOS E ON L.evento_id = E.id
+    JOIN
+        PESSOAS P ON L.palestrante_id = P.id
     """
-    return executar_sql(sql, (nome, data_inicio, data_fim, local, organizador_id))
+    return executar_snowpark_select(session, sql)
 
-def ler_eventos():
+def atualizar_palestra(session: Session, id_palestra, titulo, descricao, data, hora, sala, evento_id, palestrante_id):
+    sql = "UPDATE PALESTRAS SET titulo = %s, descricao = %s, data = %s, hora = %s, sala = %s, evento_id = %s, palestrante_id = %s WHERE id = %s"
+    return executar_snowpark_dml(session, sql, (titulo, descricao, data, hora, sala, evento_id, palestrante_id, id_palestra))
+
+def criar_inscricao(session: Session, participante_id, palestra_id, data_inscricao):
+    sql = "INSERT INTO INSCRICOES (participante_id, palestra_id, data_inscricao) VALUES (%s, %s, %s)"
+    return executar_snowpark_dml(session, sql, (participante_id, palestra_id, data_inscricao))
+
+def ler_inscricoes(session: Session):
     sql = """
-    SELECT E.id, E.nome AS Evento, E.data_inicio, E.data_fim, E.local, P.nome AS Organizador
-    FROM EVENTOS E JOIN PESSOAS P ON E.organizador_id = P.id
-    ORDER BY E.data_inicio DESC;
+    SELECT
+        I.participante_id, I.palestra_id, P.nome AS participante, L.titulo AS palestra, I.data_inscricao
+    FROM
+        INSCRICOES I
+    JOIN
+        PESSOAS P ON I.participante_id = P.id
+    JOIN
+        PALESTRAS L ON I.palestra_id = L.id
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-def atualizar_evento(event_id, nome, data_inicio, data_fim, local, organizador_id):
-    sql = """
-    UPDATE EVENTOS
-    SET nome = %s, data_inicio = %s, data_fim = %s, local = %s, organizador_id = %s
-    WHERE id = %s
-    """
-    return executar_sql(sql, (nome, data_inicio, data_fim, local, organizador_id, event_id))
-
-def deletar_evento(event_id):
-    sql = "DELETE FROM EVENTOS WHERE id = %s"
-    return executar_sql(sql, (event_id,))
-
-
-# --- CRUD PARA PALESTRAS ---
-
-def criar_palestra(titulo, descricao, data, hora, sala, evento_id, palestrante_id):
-    sql = """
-    INSERT INTO PALESTRAS (titulo, descricao, data, hora, sala, evento_id, palestrante_id)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """
-    return executar_sql(sql, (titulo, descricao, data, hora, sala, evento_id, palestrante_id))
-
-def ler_palestras():
-    sql = """
-    SELECT L.id, L.titulo, E.nome AS Evento, P.nome AS Palestrante, L.data, L.hora, L.sala, L.evento_id, L.palestrante_id
-    FROM PALESTRAS L
-    JOIN EVENTOS E ON L.evento_id = E.id
-    JOIN PESSOAS P ON L.palestrante_id = P.id
-    ORDER BY L.data DESC, L.hora ASC;
-    """
-    return executar_sql(sql, fetch=True)
-
-def buscar_palestrantes():
-    """Busca ID e Nome das Pessoas que podem Palestrar (tipo Organizador)."""
-    sql = "SELECT id, nome FROM PESSOAS WHERE tipo_pessoa = 'Organizador';"
-    return executar_sql(sql, fetch=True)
-
-def buscar_palestra_por_id(palestra_id):
-    sql = "SELECT titulo, descricao, data, hora, sala, evento_id, palestrante_id FROM PALESTRAS WHERE id = %s"
-    return executar_sql(sql, (palestra_id,), fetch=True)
-
-def atualizar_palestra(palestra_id, titulo, descricao, data, hora, sala, evento_id, palestrante_id):
-    sql = """
-    UPDATE PALESTRAS
-    SET titulo = %s, descricao = %s, data = %s, hora = %s, sala = %s, evento_id = %s, palestrante_id = %s
-    WHERE id = %s
-    """
-    return executar_sql(sql, (titulo, descricao, data, hora, sala, evento_id, palestrante_id, palestra_id))
-
-def deletar_palestra(palestra_id):
-    sql = "DELETE FROM PALESTRAS WHERE id = %s"
-    return executar_sql(sql, (palestra_id,))
-
-
-# --- CRUD PARA INSCRICOES ---
-
-def criar_inscricao(participante_id, palestra_id, data_inscricao):
-    sql = """
-    INSERT INTO INSCRICOES (participante_id, palestra_id, data_inscricao)
-    VALUES (%s, %s, %s)
-    """
-    return executar_sql(sql, (participante_id, palestra_id, data_inscricao))
-
-def ler_inscricoes():
-    sql = """
-    SELECT I.participante_id, I.palestra_id, P.nome AS Participante, L.titulo AS Palestra, I.data_inscricao
-    FROM INSCRICOES I
-    JOIN PESSOAS P ON I.participante_id = P.id
-    JOIN PALESTRAS L ON I.palestra_id = L.id
-    ORDER BY I.data_inscricao DESC;
-    """
-    return executar_sql(sql, fetch=True)
-
-def deletar_inscricao(participante_id, palestra_id):
+def deletar_inscricao(session: Session, participante_id, palestra_id):
     sql = "DELETE FROM INSCRICOES WHERE participante_id = %s AND palestra_id = %s"
-    return executar_sql(sql, (participante_id, palestra_id))
+    return executar_snowpark_dml(session, sql, (participante_id, palestra_id))
 
+def criar_pagamento(session: Session, participante_id, evento_id, valor, status, tipo_pagamento_id):
+    sql = "INSERT INTO PAGAMENTOS (participante_id, evento_id, valor, status, tipo_pagamento_id) VALUES (%s, %s, %s, %s, %s)"
+    return executar_snowpark_dml(session, sql, (participante_id, evento_id, valor, status, tipo_pagamento_id))
 
-# --- CRUD PARA PAGAMENTOS ---
-
-def criar_pagamento(participante_id, evento_id, valor, status):
+def ler_pagamentos(session: Session):
     sql = """
-    INSERT INTO PAGAMENTOS (participante_id, evento_id, valor, status)
-    VALUES (%s, %s, %s, %s)
+        SELECT
+            PG.id, P.nome AS participante, E.nome AS evento, PG.valor, PG.status, T.nome AS tipo_pagamento, PG.TIPO_PAGAMENTO_ID
+        FROM
+            PAGAMENTOS PG
+        JOIN
+            PESSOAS P ON PG.participante_id = P.id
+        JOIN
+            EVENTOS E ON PG.evento_id = E.id
+        LEFT JOIN
+            TIPOS_PAGAMENTO T ON PG.TIPO_PAGAMENTO_ID = T.ID
     """
-    return executar_sql(sql, (participante_id, evento_id, valor, status))
+    return executar_snowpark_select(session, sql)
 
-def ler_pagamentos():
-    sql = """
-    SELECT PG.id, P.nome AS Participante, E.nome AS Evento, PG.valor, PG.status
-    FROM PAGAMENTOS PG
-    JOIN PESSOAS P ON PG.participante_id = P.id
-    JOIN EVENTOS E ON PG.evento_id = E.id
-    ORDER BY PG.id DESC;
-    """
-    return executar_sql(sql, fetch=True)
-    
-def buscar_pagamento_por_id(pagamento_id):
-    sql = "SELECT participante_id, evento_id, valor, status FROM PAGAMENTOS WHERE id = %s"
-    return executar_sql(sql, (pagamento_id,), fetch=True)
+def atualizar_pagamento(session: Session, id_pagamento, valor, status, tipo_pagamento_id):
+    sql = "UPDATE PAGAMENTOS SET valor = %s, status = %s, tipo_pagamento_id = %s WHERE id = %s"
+    return executar_snowpark_dml(session, sql, (valor, status, tipo_pagamento_id, id_pagamento))
 
-def atualizar_pagamento(pagamento_id, participante_id, evento_id, valor, status):
-    sql = "UPDATE PAGAMENTOS SET participante_id = %s, evento_id = %s, valor = %s, status = %s WHERE id = %s"
-    return executar_sql(sql, (participante_id, evento_id, valor, status, pagamento_id))
-
-def deletar_pagamento(pagamento_id):
-    sql = "DELETE FROM PAGAMENTOS WHERE id = %s"
-    return executar_sql(sql, (pagamento_id,))
-
-
-# --- CRUD PARA TIPOS_PAGAMENTO ---
-
-def criar_tipo_pagamento(nome):
+def criar_tipo_pagamento(session: Session, nome):
     sql = "INSERT INTO TIPOS_PAGAMENTO (nome) VALUES (%s)"
-    return executar_sql(sql, (nome,))
+    return executar_snowpark_dml(session, sql, (nome,))
 
-def ler_tipos_pagamento():
-    sql = "SELECT id, nome FROM TIPOS_PAGAMENTO ORDER BY nome ASC;"
-    return executar_sql(sql, fetch=True)
+def ler_tipos_pagamento(session: Session):
+    sql = "SELECT id, nome FROM TIPOS_PAGAMENTO"
+    return executar_snowpark_select(session, sql)
 
-def atualizar_tipo_pagamento(tipo_id, nome):
+def atualizar_tipo_pagamento(session: Session, id_tipo, nome):
     sql = "UPDATE TIPOS_PAGAMENTO SET nome = %s WHERE id = %s"
-    return executar_sql(sql, (nome, tipo_id))
+    return executar_snowpark_dml(session, sql, (nome, id_tipo))
 
-def deletar_tipo_pagamento(tipo_id):
-    sql = "DELETE FROM TIPOS_PAGAMENTO WHERE id = %s"
-    return executar_sql(sql, (tipo_id,))
-
-
-# --- CRUD PARA FEEDBACK_PALESTRAS ---
-
-def upsert_feedback(participante_id, palestra_id, nota, comentario):
-    """
-    UPSERT: Usa MERGE para atualizar o feedback se ele já existir,
-    ou insere um novo se for o primeiro.
-    """
-    sql = """
+def upsert_feedback(session: Session, participante_id, palestra_id, nota, comentario):
+    sql = f"""
     MERGE INTO FEEDBACK_PALESTRAS AS target
     USING (
-        SELECT %s AS participante_id, %s AS palestra_id, %s AS nota, %s AS comentario
+        SELECT {participante_id} AS participante_id, {palestra_id} AS palestra_id, {nota} AS nota, '{comentario}' AS comentario
     ) AS source
     ON target.participante_id = source.participante_id AND target.palestra_id = source.palestra_id
     WHEN MATCHED THEN
@@ -259,59 +192,42 @@ def upsert_feedback(participante_id, palestra_id, nota, comentario):
         INSERT (participante_id, palestra_id, nota, comentario)
         VALUES (source.participante_id, source.palestra_id, source.nota, source.comentario)
     """
-    params = (participante_id, palestra_id, nota, comentario)
-    return executar_sql(sql, params)
+    return executar_snowpark_dml(session, sql)
 
-def ler_feedback():
-    sql = """
-    SELECT F.id, P.nome AS Participante, L.titulo AS Palestra, F.nota, F.comentario
-    FROM FEEDBACK_PALESTRAS F
-    JOIN PESSOAS P ON F.participante_id = P.id
-    JOIN PALESTRAS L ON F.palestra_id = L.id
-    ORDER BY F.id DESC;
-    """
-    return executar_sql(sql, fetch=True)
-
-def buscar_feedback_por_id(feedback_id):
-    sql = "SELECT participante_id, palestra_id, nota, comentario FROM FEEDBACK_PALESTRAS WHERE id = %s"
-    return executar_sql(sql, (feedback_id,), fetch=True)
-
-def atualizar_feedback(feedback_id, participante_id, palestra_id, nota, comentario):
-    sql = """
-    UPDATE FEEDBACK_PALESTRAS
-    SET participante_id = %s, palestra_id = %s, nota = %s, comentario = %s
-    WHERE id = %s
-    """
-    return executar_sql(sql, (participante_id, palestra_id, nota, comentario, feedback_id))
-
-def deletar_feedback(feedback_id):
-    sql = "DELETE FROM FEEDBACK_PALESTRAS WHERE id = %s"
-    return executar_sql(sql, (feedback_id,))
-
-
-# --- CONSULTAS ---
-def consulta_participantes_palestra():
-    """Consulta de 3+ tabelas (Fase 3)."""
+def ler_feedback(session: Session):
     sql = """
     SELECT
-        P.nome AS Participante,
-        L.titulo AS Palestra,
-        E.nome AS Evento,
+        F.id, P.nome AS participante, L.titulo AS palestra, F.nota, F.comentario
+    FROM
+        FEEDBACK_PALESTRAS F
+    JOIN
+        PESSOAS P ON F.participante_id = P.id
+    JOIN
+        PALESTRAS L ON F.palestra_id = L.id
+    """
+    return executar_snowpark_select(session, sql)
+
+def atualizar_feedback(session: Session, id_feedback, nota, comentario):
+    sql = "UPDATE FEEDBACK_PALESTRAS SET nota = %s, comentario = %s WHERE id = %s"
+    return executar_snowpark_dml(session, sql, (nota, comentario, id_feedback))
+
+def consulta_participantes_palestra(session: Session):
+    sql = """
+    SELECT
+        P.nome AS participante,
+        L.titulo AS palestra,
+        E.nome AS evento,
         I.data_inscricao
     FROM
         INSCRICOES I
     JOIN PESSOAS P ON I.participante_id = P.id
     JOIN PALESTRAS L ON I.palestra_id = L.id
     JOIN EVENTOS E ON L.evento_id = E.id
-    WHERE
-        P.tipo_pessoa = 'Participante'
-    ORDER BY
-        E.nome, L.titulo, P.nome;
+    ORDER BY E.nome, L.titulo
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-def consulta_aninhada_1_nao_inscritos_em_evento_x(evento_id_ref):
-    """Fase 4 - Consulta Aninhada 1: Participantes que NÃO se inscreveram em NENHUMA palestra do Evento X."""
+def consulta_aninhada_1_nao_inscritos_em_evento_x(session: Session, evento_id_ref):
     sql = """
     SELECT
         nome, email
@@ -329,10 +245,9 @@ def consulta_aninhada_1_nao_inscritos_em_evento_x(evento_id_ref):
                 L.evento_id = %s
         );
     """
-    return executar_sql(sql, (evento_id_ref,), fetch=True)
+    return executar_snowpark_select(session, sql, (evento_id_ref,))
 
-def consulta_aninhada_2_palestras_acima_media():
-    """Fase 4 - Consulta Aninhada 2: Palestras com nota média de feedback superior à média geral."""
+def consulta_aninhada_2_palestras_acima_media(session: Session):
     sql = """
     SELECT
         titulo,
@@ -341,21 +256,18 @@ def consulta_aninhada_2_palestras_acima_media():
         PALESTRAS P
     WHERE
         (SELECT AVG(nota) FROM FEEDBACK_PALESTRAS F WHERE F.palestra_id = P.id) > (
-            -- Subconsulta 1: Média geral de todas as notas
             SELECT AVG(nota) FROM FEEDBACK_PALESTRAS
         )
     ORDER BY media_palestra DESC;
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-
-def consulta_grupo_1_total_eventos_por_organizador():
-    """Fase 4 - Consulta de Grupo 1: Contagem de eventos e valor total de pagamentos por Organizador."""
+def consulta_grupo_1_total_eventos_por_organizador(session: Session):
     sql = """
     SELECT
-        O.nome AS Organizador,
-        COUNT(DISTINCT E.id) AS Total_Eventos_Organizados,
-        COALESCE(SUM(P.valor), 0.00) AS Valor_Total_Arrecadado
+        O.nome AS organizador,
+        COUNT(DISTINCT E.id) AS total_eventos_organizados,
+        COALESCE(SUM(P.valor), 0.00) AS valor_total_arrecadado
     FROM
         PESSOAS O
     LEFT JOIN EVENTOS E ON O.id = E.organizador_id
@@ -367,55 +279,47 @@ def consulta_grupo_1_total_eventos_por_organizador():
     HAVING
         COUNT(DISTINCT E.id) > 0;
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-def consulta_grupo_2_estatisticas_por_status_pagamento():
-    """Fase 4 - Consulta de Grupo 2: Média, Máximo e Mínimo dos valores de pagamento por status."""
+def consulta_grupo_2_estatisticas_por_status_pagamento(session: Session):
     sql = """
     SELECT
         status,
-        COUNT(*) AS Total_Pagamentos,
-        AVG(valor) AS Valor_Medio,
-        MAX(valor) AS Maior_Valor,
-        MIN(valor) AS Menor_Valor
+        COUNT(*) AS total_pagamentos,
+        AVG(valor) AS valor_medio,
+        MAX(valor) AS maior_valor,
+        MIN(valor) AS menor_valor
     FROM
         PAGAMENTOS
     GROUP BY
         status;
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-
-def consulta_conjunto_1_atores_financeiros():
-    """Fase 4 - Consulta de Conjunto 1 (UNION): Organizadores OU Participantes que pagaram."""
+def consulta_conjunto_1_atores_financeiros(session: Session):
     sql = """
-    -- Parte 1: Todos os Organizadores
-    SELECT nome, email, 'ORGANIZADOR' AS Tipo_Financeiro
+    SELECT nome, email, 'ORGANIZADOR' AS tipo_financeiro
     FROM PESSOAS WHERE tipo_pessoa = 'Organizador'
     
     UNION
     
-    -- Parte 2: Participantes que fizeram algum pagamento
-    SELECT P.nome, P.email, 'PARTICIPANTE PAGANTE' AS Tipo_Financeiro
+    SELECT P.nome, P.email, 'PARTICIPANTE PAGANTE' AS tipo_financeiro
     FROM PESSOAS P
     JOIN PAGAMENTOS PG ON P.id = PG.participante_id
     WHERE P.tipo_pessoa = 'Participante';
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
 
-def consulta_conjunto_2_palestras_sem_feedback():
-    """Fase 4 - Consulta de Conjunto 2 (EXCEPT): Palestras que tiveram inscrições, mas NÃO receberam feedback."""
+def consulta_conjunto_2_palestras_sem_feedback(session: Session):
     sql = """
-    -- Parte 1: Palestras que possuem inscrições
     SELECT DISTINCT L.id, L.titulo
     FROM PALESTRAS L
     JOIN INSCRICOES I ON L.id = I.palestra_id
     
     EXCEPT
     
-    -- Parte 2: Palestras que possuem feedback
     SELECT DISTINCT L.id, L.titulo
     FROM PALESTRAS L
     JOIN FEEDBACK_PALESTRAS F ON L.id = F.palestra_id;
     """
-    return executar_sql(sql, fetch=True)
+    return executar_snowpark_select(session, sql)
