@@ -651,21 +651,17 @@ def mostrar_crud_feedback():
                 elif isinstance(resultado, str):
                     st.error(f"Erro: {resultado}")
 
-    # --- UPDATE / DELETE (simplificado) ---
     if not df.empty:
-        # UPDATE
         with tab2:
             with st.form("form_feedback_update"):
                 st.subheader("Alterar Feedback")
                 feedback_ids = df['ID'].unique().tolist()
                 update_id = st.selectbox("ID do Feedback a Alterar", feedback_ids, key="f_id_upd")
                 
-                # Simplificação: Apenas altera a nota
                 upd_nota = st.slider("Nova Nota (0-5)", 0, 5, 5, key="f_nota_upd")
                 upd_button = st.form_submit_button("Atualizar Feedback")
 
                 if upd_button:
-                    # Busca os dados completos para garantir que FKs não sejam perdidas
                     col, data = buscar_feedback_por_id(update_id)
                     if data:
                         dados = dict(zip(col, data[0]))
@@ -708,11 +704,9 @@ def mostrar_consultas():
     st.markdown("---")
     st.title("Consultas Fase 4")
 
-    # --- Consulta 2 (Aninhada 1) ---
     st.subheader("2. Pessoas NÃO Inscritas em um Evento Específico")
     st.caption("Requisito: Consulta com SELECT aninhado (Participantes sem NENHUMA inscrição em um Evento).")
     
-    # Obter IDs dos Eventos para seleção
     _, dados_eventos = buscar_eventos()
     eventos_map = {nome: id for id, nome in dados_eventos} if dados_eventos else {}
     eventos_list = list(eventos_map.keys())
@@ -732,7 +726,6 @@ def mostrar_consultas():
 
     st.markdown("---")
 
-    # --- Consulta 3 (Aninhada 2) ---
     st.subheader("3. Palestras com Nota Média Acima da Média Geral")
     st.caption("Requisito: Consulta com SELECT aninhado (Compara média da palestra com média global).")
     colunas, dados = consulta_aninhada_2_palestras_acima_media()
@@ -744,7 +737,6 @@ def mostrar_consultas():
 
     st.markdown("---")
 
-    # --- Consulta 4 (Grupo 1) ---
     st.subheader("4. Produtividade e Arrecadação por Organizador")
     st.caption("Requisito: Consulta com função de grupo (COUNT e SUM, com GROUP BY e HAVING).")
     colunas, dados = consulta_grupo_1_total_eventos_por_organizador()
@@ -756,7 +748,6 @@ def mostrar_consultas():
 
     st.markdown("---")
 
-    # --- Consulta 5 (Grupo 2) ---
     st.subheader("5. Estatísticas de Pagamento por Status")
     st.caption("Requisito: Consulta com função de grupo (AVG, MAX, MIN).")
     colunas, dados = consulta_grupo_2_estatisticas_por_status_pagamento()
@@ -768,7 +759,6 @@ def mostrar_consultas():
 
     st.markdown("---")
 
-    # --- Consulta 6 (Conjunto 1) ---
     st.subheader("6. Lista Consolidada de Atores Financeiros")
     st.caption("Requisito: Consulta com operador de conjunto (UNION).")
     colunas, dados = consulta_conjunto_1_atores_financeiros()
@@ -780,7 +770,6 @@ def mostrar_consultas():
 
     st.markdown("---")
 
-    # --- Consulta 7 (Conjunto 2) ---
     st.subheader("7. Palestras com Inscrição, mas Sem Feedback")
     st.caption("Requisito: Consulta com operador de conjunto (EXCEPT/MINUS).")
     colunas, dados = consulta_conjunto_2_palestras_sem_feedback()
@@ -791,7 +780,6 @@ def mostrar_consultas():
         st.info("Todas as palestras com inscrições têm feedback, ou não há dados.")
 
 # --- Gerenciamento de Estado da Navegação ---
-# Cria a chave de estado 'page' se ela não existir
 if 'page' not in st.session_state:
     st.session_state.page = 'Home'
 
@@ -799,7 +787,6 @@ if 'page' not in st.session_state:
 st.sidebar.title("✨ Plataforma bora.ai")
 st.sidebar.markdown("---")
 
-# Definição dos Módulos Principais
 MODULOS = {
     "Home": "🏠 Início",
     "Pessoas": "👥 Gerenciamento de Usuários",
@@ -812,7 +799,6 @@ MODULOS = {
     "Consultas": "📊 Relatórios e Análise (Fase 4)"
 }
 
-# Cria os botões ou links de navegação
 st.sidebar.subheader("Navegação Principal")
 for key, value in MODULOS.items():
     if st.sidebar.button(value, key=f"nav_btn_{key}"):
@@ -833,7 +819,6 @@ def router():
         st.markdown(f"**Status da Entrega (Fase 3):** 7/7 tabelas implementadas.")
         st.markdown(f"**Status da Entrega (Fase 4):** 6/6 consultas complexas implementadas na tela 'Relatórios e Análise'.")
 
-    # Módulos de Manutenção (CRUD)
     elif page == 'Pessoas':
         mostrar_crud_pessoas()
     elif page == 'Eventos':
@@ -849,9 +834,7 @@ def router():
     elif page == 'Feedback':
         mostrar_crud_feedback()
         
-    # Módulo de Consultas
     elif page == 'Consultas':
         mostrar_consultas()
 
-# Roda o Router no final do app
 router()

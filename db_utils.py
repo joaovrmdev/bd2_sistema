@@ -1,10 +1,8 @@
-# db_utils.py (Versão Completa e Atualizada com 7 CRUDs)
 
 import snowflake.connector
 import datetime
 
 # --- CONFIGURAÇÃO ---
-# Substitua com suas credenciais REAIS do Snowflake
 SNOWFLAKE_CONFIG = {
     'user': 'joaomata',
     'password': 'Oscarwilde2018',
@@ -13,7 +11,7 @@ SNOWFLAKE_CONFIG = {
     'database': 'BD2',
     'schema': 'PUBLIC'
 }
-# --------------------
+# --- CONEXÃO BD ---
 
 def conectar_bd():
     """Tenta estabelecer a conexão com o Snowflake."""
@@ -31,7 +29,6 @@ def conectar_bd():
 def executar_sql(sql_query, params=None, fetch=False):
     conn = conectar_bd()
     if conn is None:
-        # Se a conexão falhar, retorna uma tupla vazia para evitar o erro de desempacotamento
         return (None, None) if fetch else "Erro de Conexão com Snowflake."
 
     try:
@@ -59,7 +56,7 @@ def executar_sql(sql_query, params=None, fetch=False):
         if conn:
             conn.close()
 
-# --- FUNÇÕES READ (Auxiliares para FKs) ---
+# --- FUNÇÕES  DE LEITURA ---
 
 def buscar_organizadores():
     """Busca ID e Nome dos Organizadores (e Palestrantes) para FKs."""
@@ -292,7 +289,7 @@ def deletar_feedback(feedback_id):
     return executar_sql(sql, (feedback_id,))
 
 
-# --- CONSULTAS FASE 3/4 ---
+# --- CONSULTAS ---
 def consulta_participantes_palestra():
     """Consulta de 3+ tabelas (Fase 3)."""
     sql = """
